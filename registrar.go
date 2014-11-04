@@ -1,13 +1,13 @@
 package main
 
 import (
-	"os"
 	"encoding/json"
+	"os"
 )
 
 func Registrar(state map[string]*FileState, input chan []*FileEvent) {
 	for events := range input {
-		emit ("Registrar: precessing %d events\n", len(events))
+		emit("Registrar: precessing %d events\n", len(events))
 		// Take the last event found for each file source
 		for _, event := range events {
 			// skip stdin
@@ -46,6 +46,6 @@ func writeRegistry(state map[string]*FileState, path string) error {
 	encoder := json.NewEncoder(file)
 	encoder.Encode(state)
 	file.Close()
-    
+
 	return onRegistryWrite(path, tempfile)
 }

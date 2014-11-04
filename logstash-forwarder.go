@@ -152,12 +152,28 @@ func main() {
 	// Finally, prospector uses the registrar information, on restart, to
 	// determine where in each file to restart a harvester.
 
-//	log.SetFlags(log.Ldate | log.Ltime | log.Lmicroseconds)
+	//	log.SetFlags(log.Ldate | log.Ltime | log.Lmicroseconds)
 	if options.useSyslog {
 		configureSyslog()
 	}
 
-	restart := loadState()
+	restart := &ProspectorResume{}
+	restart.persist = make(chan *FileState)
+
+	// Load the previous log file locations now, for use in prospector
+	restart.files = make(map[string]*FileState)
+
+	if existing, e := os.OpenFile(".logstash-forwarder", os.O_RDONLY|os.O_CREATE, 0666); e == nil {
+		wd := ""
+		if wd, e = os.Getwd(); e != nil {
+			emit("WARNING: os.Getwd retuned unexpected error %s -- ignoring\n", e.Error())
+		}
+		emit("Loading registrar data from %s/.logstash-forwarder\n", wd)
+
+		decoder := json.NewDecoder(existing)
+		decoder.Decode(&restart.files)
+		existing.Close()
+	}
 
 	pendingProspectorCnt := 0
 
@@ -201,9 +217,9 @@ func loadState() *ProspectorResume {
 	restart.persist = make(chan *FileState)
 
 	// Load the previous log file locations now, for use in prospector
-	restart.files = make(map[string]*FileState)    
+	restart.files = make(map[string]*FileState)
 	if existing, e := os.Open(".logstash-forwarder"); e == nil {
-		defer existing.Close() 
+		defer existing.Close()
 		wd := ""
 		if wd, e = os.Getwd(); e != nil {
 			emit("WARNING: os.Getwd retuned unexpected error %s -- ignoring\n", e.Error())
@@ -211,7 +227,7 @@ func loadState() *ProspectorResume {
 		emit("Loading registrar data from %s/.logstash-forwarder\n", wd)
 
 		decoder := json.NewDecoder(existing)
-		decoder.Decode(&restart.files)	
+		decoder.Decode(&restart.files)
 	}
 	return restart
 }
