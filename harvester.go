@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"os" // for File and friends
@@ -10,58 +11,49 @@ import (
 )
 
 type Harvester struct {
+	IsTracked  bool
 	Path       string /* the file path to harvest */
 	FileConfig FileConfig
 	Offset     int64
 	FinishChan chan int64
 
 	file *os.File /* the file being watched */
+	size int64
+	info *os.FileInfo /* most recent size of the file being watched */
 }
 
+var FILE_TRUNCATED = errors.New("file has been truncated")
+
 func (h *Harvester) Harvest(output chan *FileEvent) {
-	h.open()
-	info, e := h.file.Stat()
-	if e != nil {
-		panic(fmt.Sprintf("Harvest: unexpected error: %s", e.Error()))
-	}
-	defer h.file.Close()
 
 	// On completion, push offset so we can continue where we left off if we relaunch on the same file
 	defer func() { h.FinishChan <- h.Offset }()
 
 	var line uint64 = 0 // Ask registrar about the line number
 
-	// get current offset in file
-	offset, _ := h.file.Seek(0, os.SEEK_CUR)
-
-	if h.Offset > 0 {
-		emit("harvest: %q position:%d (offset snapshot:%d)\n", h.Path, h.Offset, offset)
+	if h.IsTracked {
+		emit("harvest: %q position:%d\n", h.Path, h.Offset)
 	} else if options.tailOnRotate {
-		emit("harvest: (tailing) %q (offset snapshot:%d)\n", h.Path, offset)
+		emit("harvest: (tailing) %q\n", h.Path)
 	} else {
-		emit("harvest: %q (offset snapshot:%d)\n", h.Path, offset)
+		emit("harvest: %q\n", h.Path)
 	}
 
-	h.Offset = offset
-
-	reader := bufio.NewReaderSize(h.file, options.harvesterBufferSize) // 16kb buffer by default
 	buffer := new(bytes.Buffer)
 
 	var read_timeout = 10 * time.Second
 	last_read_time := time.Now()
 	for {
-		text, bytesread, err := h.readline(reader, buffer, read_timeout)
+		text, bytesread, err := h.readline(buffer, read_timeout)
 
 		if err != nil {
-			if err == io.EOF {
+			if err == FILE_TRUNCATED {
+				emit("File truncated, seeking to beginning: %s\n", h.Path)
+				h.Offset = 0
+				continue
+			} else if err == io.EOF {
 				// timed out waiting for data, got eof.
-				// Check to see if the file was truncated
-				info, _ := h.file.Stat()
-				if info.Size() < h.Offset {
-					emit("File truncated, seeking to beginning: %s\n", h.Path)
-					h.file.Seek(0, os.SEEK_SET)
-					h.Offset = 0
-				} else if age := time.Since(last_read_time); age > h.FileConfig.deadtime {
+				if age := time.Since(last_read_time); age > h.FileConfig.deadtime {
 					// if last_read_time was more than dead time, this file is probably
 					// dead. Stop watching it.
 					emit("Stopping harvest of %s; last change was %v ago\n", h.Path, age)
@@ -82,7 +74,7 @@ func (h *Harvester) Harvest(output chan *FileEvent) {
 			Line:     line,
 			Text:     text,
 			Fields:   &h.FileConfig.Fields,
-			fileinfo: &info,
+			fileinfo: h.info,
 		}
 		h.Offset += int64(bytesread)
 
@@ -113,24 +105,26 @@ func (h *Harvester) open() *os.File {
 	// Check we are not following a rabbit hole (symlinks, etc.)
 	mustBeRegularFile(h.file) // panics
 
-	if h.Offset > 0 {
+	if h.IsTracked {
 		h.file.Seek(h.Offset, os.SEEK_SET)
 	} else if options.tailOnRotate {
-		h.file.Seek(0, os.SEEK_END)
+		h.Offset, _ = h.file.Seek(0, os.SEEK_END)
+		h.IsTracked = true
 	} else {
-		h.file.Seek(0, os.SEEK_SET)
+		h.Offset, _ = h.file.Seek(0, os.SEEK_SET)
+		h.IsTracked = true
 	}
 
 	return h.file
 }
 
-func (h *Harvester) readline(reader *bufio.Reader, buffer *bytes.Buffer, eof_timeout time.Duration) (*string, int, error) {
+func (h *Harvester) readline(buffer *bytes.Buffer, eof_timeout time.Duration) (*string, int, error) {
 	var is_partial bool = true
 	var newline_length int = 1
 	start_time := time.Now()
 
 	for {
-		segment, err := reader.ReadBytes('\n')
+		segment, err := h.read(int64(buffer.Len()))
 
 		if segment != nil && len(segment) > 0 {
 			if segment[len(segment)-1] == '\n' {
@@ -176,6 +170,25 @@ func (h *Harvester) readline(reader *bufio.Reader, buffer *bytes.Buffer, eof_tim
 	} /* forever read chunks */
 
 	return nil, 0, nil
+}
+
+func (h *Harvester) read(offset int64) (line []byte, err error) {
+	h.open()
+	defer h.file.Close()
+
+	info, _ := h.file.Stat()
+	defer func(size int64, info *os.FileInfo) {
+		h.size = size
+		h.info = info
+	}(info.Size(), &info)
+	if info.Size() < h.size {
+		return nil, FILE_TRUNCATED
+	}
+
+	h.file.Seek(offset, os.SEEK_CUR)
+	reader := bufio.NewReader(h.file)
+
+	return reader.ReadBytes('\n')
 }
 
 // panics

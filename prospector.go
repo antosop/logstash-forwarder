@@ -131,7 +131,7 @@ func (p *Prospector) scan(path string, output chan *FileEvent, resume *Prospecto
 				// Once we detect changes again we can resume another harvester again - this keeps number of go routines to a minimum
 				if is_resuming {
 					emit("Resuming harvester on a previously harvested file: %s\n", file)
-					harvester := &Harvester{Path: file, FileConfig: p.FileConfig, Offset: offset, FinishChan: newinfo.harvester}
+					harvester := &Harvester{IsTracked: false, Path: file, FileConfig: p.FileConfig, Offset: offset, FinishChan: newinfo.harvester}
 					go harvester.Harvest(output)
 				} else {
 					// Old file, skip it, but push offset of file size so we start from the end if this file changes and needs picking up
@@ -160,7 +160,7 @@ func (p *Prospector) scan(path string, output chan *FileEvent, resume *Prospecto
 				}
 
 				// Launch the harvester
-				harvester := &Harvester{Path: file, FileConfig: p.FileConfig, Offset: offset, FinishChan: newinfo.harvester}
+				harvester := &Harvester{IsTracked: false, Path: file, FileConfig: p.FileConfig, Offset: offset, FinishChan: newinfo.harvester}
 				go harvester.Harvest(output)
 			}
 		} else {
@@ -183,7 +183,7 @@ func (p *Prospector) scan(path string, output chan *FileEvent, resume *Prospecto
 					newinfo.harvester = make(chan int64, 1)
 
 					// Start a harvester on the path
-					harvester := &Harvester{Path: file, FileConfig: p.FileConfig, FinishChan: newinfo.harvester}
+					harvester := &Harvester{IsTracked: true, Path: file, FileConfig: p.FileConfig, FinishChan: newinfo.harvester}
 					go harvester.Harvest(output)
 				}
 
@@ -196,7 +196,7 @@ func (p *Prospector) scan(path string, output chan *FileEvent, resume *Prospecto
 
 				// Start a harvester on the path; an old file was just modified and it doesn't have a harvester
 				// The offset to continue from will be stored in the harvester channel - so take that to use and also clear the channel
-				harvester := &Harvester{Path: file, FileConfig: p.FileConfig, Offset: <-newinfo.harvester, FinishChan: newinfo.harvester}
+				harvester := &Harvester{IsTracked: true, Path: file, FileConfig: p.FileConfig, Offset: <-newinfo.harvester, FinishChan: newinfo.harvester}
 				go harvester.Harvest(output)
 			}
 		}
